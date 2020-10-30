@@ -5,7 +5,7 @@ control <- list(
   updated_date = as.Date("2020/08/06"),
   unit = "billion",
   currency = "VND",
-  raw_file_path = here::here("manager", "instruction", "earning_analysis", "earning_raw_20206M.xlsx"),
+  raw_file_path = here::here("earning_analysis", "earning_raw_20206M.xlsx"),
   threshold_extreme = 2
 )
 
@@ -23,6 +23,7 @@ library(magrittr)
 library(tidyselect)
 library(lubridate)
 library(readxl)
+library(ggplot2)
 
 #' Raw
 raw <- readxl::read_xlsx(path = control$raw_file_path,
@@ -64,7 +65,7 @@ earning_classification_validate <- raw %>%
   dplyr::ungroup()
 
 #' GICS 
-vietnam_gics_classification <- readxl::read_xlsx(path = here::here("manager", "instruction", "earning_analysis", "vietnam_bloomberg_gics.xlsx"), 
+vietnam_gics_classification <- readxl::read_xlsx(path = here::here("earning_analysis", "vietnam_bloomberg_gics.xlsx"), 
                                                  sheet = "DATA", range = NULL, col_names = TRUE,
                                                  col_types = NULL, na = c("", "NA"), trim_ws = TRUE, skip = 0,
                                                  n_max = Inf, guess_max = 1000,
@@ -130,13 +131,6 @@ extract_component <- ticker_valuation %>%
                                                       ~ !is.na(.)), collapse = ", ")) %>%
   dplyr::ungroup()
 
-
-
-
-foreach::foreach() %do% {
-  
-}
-
 ticker_return <- xml2::read_html(x = "https://s.cafef.vn/thong-ke/timeline-3-thang/san-all.chn") %>%
   rvest::html_nodes(xpath = '//*[@id="bigtable"]') %>%
   rvest::html_table(trim = TRUE) %>%
@@ -148,7 +142,7 @@ ticker_return <- xml2::read_html(x = "https://s.cafef.vn/thong-ke/timeline-3-tha
   dplyr::mutate(return_3_month = as.numeric(stringr::str_extract(return_3_month, "\\d+\\.\\d+")))
 
 
-ggplot2::ggplot(data = earning_classification_by_sector, mapping = aes(x = earning_classification_code)) %+%
-  geom_histogram(fill="#69b3a2", color="#e9ecef", alpha=0.9) %+%
+ggplot2::ggplot(data = earning_classification_by_sector, mapping = aes(x = current_pe_ratio, group = gics_sector_name)) +
+  geom_histogram(bins = 100) +
   facet_wrap(~ gics_sector_name)
 
