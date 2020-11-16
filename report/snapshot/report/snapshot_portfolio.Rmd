@@ -1,0 +1,409 @@
+---
+title: "Portfolio Snapshot"
+author: "Mai"
+date: "9/11/2020"
+output: html_document
+---
+
+<!-- Set-Up -->
+```{r setup, include=FALSE}
+#' Knit Setting
+base::options(knitr.table.format = "html")
+base::options(knitr.kable.NA = "")
+knitr::opts_chunk$set(echo = FALSE)
+
+#' Library
+base::suppressPackageStartupMessages(
+  for (pack in c(
+    "DBI", "pool", "RMariaDB", "config",
+    "magrittr", "dplyr", "lubridate", "vctrs", "tibble", "gt",
+    "foreach", "purrr", "tidytable", "tibble", "tidyr",
+    "fs", "reactable", "shiny", "httr", "vroom", "sparkline",
+    "glue", "stringr", "ggplot2","highcharter",
+    "rmarkdown", "knitr", "kableExtra", "pander", "emo", "rlang"
+  )) {
+    library(package = pack, character.only = TRUE, warn.conflicts = FALSE)
+    rm(pack)
+  }
+)
+
+#' Functional
+c("database", "period", "utils") %>%
+  purrr::map(~ fs::dir_ls(path = glue::glue("R/{.}"), glob = "*.R")) %>%
+  unlist() %>%
+  purrr::walk(~ sys.source(., envir = knitr::knit_global()))
+```
+
+<!-- HTML OUTPUT -->
+```{r html-output, warning=FALSE}
+#' Ticker Porfolio
+ticker_portfolio <- vroom::vroom(
+  file = file.path("basement/snapshot/data/ticker_porfolio.tsv"),
+  col_types = vroom::cols(
+    ticker = vroom::col_character(),
+    close = vroom::col_double(),
+    price_reference = vroom::col_double(),
+    matched_price = vroom::col_double(),
+    price_change_percent = vroom::col_double(),
+    golden_point = vroom::col_character(),
+    golden_momentum = vroom::col_character(),
+    ticker_uri = vroom::col_character(),
+    sub_info = vroom::col_character()
+  )
+) %>%
+  tidytable::summarise.(
+    .by = c(
+      ticker, price_reference, matched_price, price_change_percent,
+      golden_point, golden_momentum, ticker_uri, sub_info, foundingdate, companyname
+    ),
+    price = list(data.frame(date, close))
+  ) %>%
+  tidytable::relocate.(price, .before = price_reference)
+
+# #' Data prepare
+# ticker_info <- ticker %>%
+#   purrr::map_dfr(~ SSI_api_company_profile(.))
+# 
+# ticker_price <- ticker %>%
+#   purrr::map_dfr(~ SSI_price(ticker = ., from = today() - 20, to = today()))
+# 
+# ticker_sparkle_data <- ticker_price %>%
+#   tidytable::select.(ticker, close) %>%
+#   tidytable::summarise.(
+#     .by = ticker,
+#     close = list(close)
+#   )
+# 
+# port_info <- ticker_info %>%
+#   tidytable::select.(ticker = symbol, industryname, exchange, marketcap) %>%
+#   tidytable::mutate.(
+#     marketcap = round(as.numeric(marketcap) / 10^9, 2)
+#   ) %>%
+#   tidytable::mutate.(
+#     classification = case.(
+#       marketcap > 10000, "largecap",
+#       marketcap < 1000, "smallcap",
+#       default = "midcap"
+#     )
+#   )
+# current_price <- ticker_price %>%
+#   arrange.(-date) %>%
+#   slice_head.(., n = 5) %>%
+#   tidytable::select.(ticker, close)
+# 
+# ref_price <- ticker_price %>%
+#   arrange.(-date) %>%
+#   slice_tail.(., n = 5) %>%
+#   tidytable::select.(ticker, open)
+# 
+# data <- ticker_sparkle_data %>%
+#   dplyr::left_join(ref_price, by = c("ticker" = "ticker")) %>%
+#   dplyr::left_join(current_price, by = c("ticker" = "ticker")) %>%
+#   tidytable::rename.(
+#     price = close.x,
+#     ref_price = open,
+#     current_price = close.y
+#   ) %>%
+#   dplyr::left_join(port_info, by = c("ticker" = "ticker")) %>%
+#   tidytable::mutate.(
+#     .by = ticker,
+#     return = round((current_price / ref_price - 1) * 100, 2),
+#     sub_info = paste(industryname, exchange, classification, sep = "|"),
+#     report = "link"
+#   ) %>%
+#   tidytable::select.(-c(industryname, exchange, classification))
+
+#' Function
+max_min_colDef <- function(maxWidth = NULL, class = NULL, ...) {
+  reactable::colDef(
+    ...,
+    align = "center",
+    na = "-----",
+    cell = function(value) {
+      if (value > 0) {
+        paste0("+", round(value, 2))
+      } else if (value < 0) {
+        paste0("-", round(value, 2))
+      } else if (value == 0) {
+        round(value, 2)
+      } else {
+        value
+      }
+    },
+    maxWidth = maxWidth,
+    style = function(value) {
+      color <- if (value > 0) {
+        "#008000"
+      } else if (value < 0) {
+        "#e00000"
+      } else {
+        "#e00000"
+      }
+      list(fontWeight = 600, color = color)
+    }
+  )
+}
+
+#' Detail function
+row_details <- function(index) {
+
+  #' Extract
+  ticker_portfolio <- ticker_portfolio[index, ]
+
+  pkg_field <- function(name, ...) {
+    if (any(is.na(...))) {
+      NULL
+    } else {
+      tagList(div(class = "detail-label", name), ...)
+    }
+  }
+
+  detail <- div(
+    class = "package-detail",
+    div(
+      class = "detail-header", ticker_portfolio$ticker,
+      span(class = "detail-title", ticker_portfolio$companyname)
+    ),
+    div(class = "detail-description", ticker_portfolio$sub_info),
+    div(tags$a(`href` = ticker_portfolio$ticker_uri, "Report")),
+    pkg_field("Founding Date", ticker_portfolio$foundingdate)
+  )
+  ticker_price_chart <- ticker_portfolio %>%
+    tidytable::select.(ticker, price) %>%
+    unnest.(price, .keep_all = TRUE) %>%
+    select.(-ticker) %>%
+    tidytable::mutate.(date = as.Date(date))
+
+  #' Highcharter
+  archived <- hchart(ticker_price_chart, "line", hcaes(x = date, y = close))
+
+  #' Append
+  detail <- tagAppendChild(detail, archived)
+
+  #' Return
+  detail
+}
+
+#' Tag
+tags$div(
+  class = "standings",
+  tags$h3("Overall"),
+  tags$p("View stocks with the highes and the lowest return in each industry at Current month and Overall year"),
+  reactable::reactable(
+    data = ticker_portfolio[, -c("foundingdate", "companyname", "sub_info", "ticker_uri")],
+    onClick = "expand",
+    resizable = TRUE,
+    defaultColDef = colDef(
+      align = "center",
+      sortNALast = TRUE,
+      headerClass = "box-score-header"
+    ),
+    columns = list(
+      ticker = colDef(
+        name = "Ticker",
+        style = list(
+          color = "#032F4F",
+          fontWeight = 600,
+          fontSize = 15
+        )
+      ),
+      price = colDef(
+        name = "Price",
+        cell = function(value, index) {
+          val <- ticker_portfolio[index, ] %>%
+            tidytable::select.(price) %>%
+            unnest.(price, .keep_all = TRUE) %>%
+            tidytable::pull.(close)
+          sparkline(val)
+        }
+      ),
+      price_reference = colDef(name = "Ref Price"),
+      matched_price = colDef(name = "Cur Price"),
+      price_change_percent = max_min_colDef(name = "Total Return"),
+      golden_point = colDef(name = "Golden Poin"),
+      golden_momentum = colDef(name = "Golden Momentum", minWidth = 120)
+    ),
+    details = row_details,
+    wrap = FALSE,
+    class = "packages-table",
+    rowStyle = list(cursor = "pointer")
+  ),
+  tags$p(style = "color: rgb(192, 192, 192);", "Souce: SSI. Update: 09/11/2020")
+)
+```
+
+```{css}
+body {
+  font-family: 'Roboto', Helvetica, Arial, sans-serif;
+  font-size: 14px;
+}
+
+.standings {
+  font-family: 'Roboto', Helvetica, Arial, sans-serif;
+  font-size: 14px;
+}
+.title {
+  margin: 18px 0;
+  font-size: 16px;
+}
+.title h2 {
+  font-size: 20px;
+  font-weight: 600;
+}
+.standings-table {
+  margin-bottom: 20px;
+}
+/* Align header text to the bottom */
+.header,
+.group-header {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+}
+.header {
+  border-bottom-color: #555;
+  font-size: 13px;
+  font-weight: 400;
+  text-transform: uppercase;
+}
+/* Highlight headers when sorting */
+.header:hover,
+.header[aria-sort="ascending"],
+.header[aria-sort="descending"] {
+  background-color: #eee;
+}
+.border-left {
+  border-left: 2px solid #555;
+}
+/* Use box-shadow to create row borders that appear behind vertical borders */
+.cell {
+  box-shadow: inset 0 -1px 0 rgba(0, 0, 0, 0.15);
+}
+.group-last .cell {
+  box-shadow: inset 0 -2px 0 #555;
+}
+.team {
+  display: flex;
+  align-items: baseline;
+}
+.record {
+  margin-left: 5px;
+  color: #999;
+  font-size: 13px;
+}
+.team-name {
+  font-size: 18px;
+  font-weight: 700;
+}
+.flag {
+  margin-right: 8px;
+  height: 21px;
+  border: 1px solid #f0f0f0;
+}
+.group {
+  font-size: 19px;
+}
+.number {
+  font-family: "Fira Mono", Consolas, Monaco, monospace;
+  font-size: 16px;
+  line-height: 30px;
+  white-space: pre;
+}
+.spi-rating {
+  width: 30px;
+  height: 30px;
+  border: 1px solid rgba(0, 0, 0, 0.03);
+  border-radius: 50%;
+  color: #000;
+  font-size: 13px;
+  letter-spacing: -2px;
+}
+.box-score-title {
+  margin-top: 24px;
+  padding: 8px;
+  background-color: hsl(205, 100%, 36%);
+  color: hsl(0, 0%, 98%);
+  font-size: 18px;
+  font-weight: 400;
+}
+.box-score-header {
+
+  border-bottom-width: 1px;
+  background-color: hsl(205, 93%, 16%);
+  color: hsl(0, 0%, 98%);
+  font-weight: 400;
+  font-size: 14px;
+  text-transform: uppercase;
+  transition: box-shadow 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+}
+
+.box-score-header:hover,
+.box-score-header[aria-sort="ascending"],
+.box-score-header[aria-sort="descending"] {
+  background-color: hsl(205, 100%, 36%);
+}
+
+.box-score-header[aria-sort="ascending"] {
+  box-shadow: inset 0 10px 0 -6px #efaa10 !important;
+}
+
+.box-score-header[aria-sort="descending"] {
+  box-shadow: inset 0 -10px 0 -6px #efaa10 !important;
+}
+.package-title {
+  font-size: 14px;
+}
+
+.package-detail {
+  padding: 24px;
+  box-shadow: inset 0 1px 3px #dbdbdb;
+  background: hsl(213, 20%, 99%);
+}
+
+.detail-label {
+  margin: 20px 0 4px;  
+  font-size: 14px;
+  color: rgba(0, 0, 0, 0.6);
+}
+
+.detail-header {
+  margin-bottom: 16px;
+  font-size: 20px;
+  font-weight: 600;
+}
+
+.detail-title {
+  margin-left: 18px;
+  font-size: 14px;
+  font-weight: 400;
+  color: rgba(0, 0, 0, 0.6);
+}
+
+.detail-description {
+  font-size: 14px;
+}
+
+.archived-table {
+  border: 1px solid hsl(213, 33%, 93%);
+  border-radius: 4px;
+  box-shadow: 0 2px 7px 0 rgba(0, 0, 0, 0.05);
+  font-size: 14px;
+}
+```
+
+```{css echo=FALSE}
+/* rmarkdown html documents */
+.main-container {
+  max-width: 1054px !important;
+}
+h1.title {
+  display: none;
+}
+/* pkgdown articles */
+.contents {
+  width: 1054px;
+}
+.page-header {
+  display: none;
+}
+```

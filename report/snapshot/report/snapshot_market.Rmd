@@ -1,0 +1,514 @@
+---
+title: "Snapshot Monthly Market Heatmap by Industry"
+author: "MaiNguyen"
+date: "2/11/2020"
+output: 
+  html_document: 
+    toc_depth: 2
+    theme: flatly
+---
+
+<!-- Set-Up -->
+```{r setup, include=FALSE}
+#' Setting
+base::options(knitr.table.format = "html")
+base::options(knitr.kable.NA = "")
+knitr::opts_chunk$set(echo = FALSE)
+
+#' Library
+base::suppressPackageStartupMessages(
+  for (pack in c(
+    "DBI", "pool", "RMariaDB", "config",
+    "magrittr", "dplyr", "lubridate", "vctrs", "tibble",
+    "foreach", "purrr", "tidytable", "tibble",
+    "fs", "reactable", "shiny", "httr", "vroom",
+    "glue", "stringr", "ggplot2", "tidyselect",
+    "rmarkdown", "knitr", "kableExtra", "emo", "rlang"
+  )) {
+    library(package = pack, character.only = TRUE, warn.conflicts = FALSE)
+    rm(pack)
+  }
+)
+
+#' Functional
+c("database", "utils") %>%
+  purrr::map(~ fs::dir_ls(path = glue::glue("R/{.}"), glob = "*.R")) %>%
+  unlist() %>%
+  purrr::walk(~ sys.source(., envir = knitr::knit_global()))
+```
+
+<!-- Query Data -->
+```{r data-functional, echo = FALSE}
+#' Config
+.__config_snapshot_return__ <- list(
+  folder = file.path("basement", "snapshot"),
+  ticker = list(
+    Energy = c("PXS", "PJT", "BSR", "GSP", "PVT", "NBC", "PGS", "PVB", "ASP", "APP"),
+    Materials = c("NSH", "HLY", "QBS", "PDB", "HAI", "STP", "DNP", "NFC", "TBX", "DAC"),
+    Industrials = c("VMS", "SSG", "SDT", "ARM", "PVO", "CLM", "SKG", "CTT", "VNF", "PC1"),
+    Consumer_Discretionary = c("HAT", "DSN", "TMT", "OCH", "STT", "TET", "BDB", "IBC", "COM", "SGH"),
+    Consumer_Staples = c("BLF", "AAM", "HNG", "THB", "SLS", "MLS", "NGC", "HGA", "HLG", "SSC"),
+    Health_Care = c("DCL", "MKV", "DHT", "SPM", "PME", "DBD", "DMC", "DNM", "IMP", "OPC"),
+    Financials = c("TPB", "FIT", "APS", "MBB", "HCM", "VIG", "OGC", "BID", "TCB", "CTS"),
+    Information_Technology = c("POT", "ELC", "VIE", "TST", "CMG", "KST", "FPT", "UNI", "DGW", "SMT"),
+    Communication_Services = c("ECI", "DAD", "LBE", "EBS", "DAE", "BST", "ADC", "BED", "SED", ""),
+    Utilities = c("GEG", "LDW", "PGD", "SEB", "NTH", "SHP", "SJD", "BWE", "VSH", "GDW"),
+    Bank = c("ACB", "MBB", "VCB", "BID", "CTG", "VIB", "LPB", "TPB", "HDB", "STB", "TCB", "VPB"),
+    Real_Estate = c("NVT", "KAC", "HDC", "KBC", "NRC", "VPH", "TIX", "PDR", "VCR", "HLD")
+  ),
+  year = 2020
+)
+#' Ticker return
+ticker_return_snapshot <- vroom::vroom(
+  file = file.path("basement", "snapshot", "data", "ticker_return_snapshot.tsv"),
+  col_types = vroom::cols(
+    ticker = vroom::col_character(),
+    ticker_name_english = vroom::col_character(),
+    market_cap = vroom::col_double(),
+    T01 = vroom::col_double(),
+    T02 = vroom::col_double(),
+    T03 = vroom::col_double(),
+    T04 = vroom::col_double(),
+    T05 = vroom::col_double(),
+    T06 = vroom::col_double(),
+    T07 = vroom::col_double(),
+    T08 = vroom::col_double(),
+    T09 = vroom::col_double(),
+    T10 = vroom::col_double(),
+    T11 = vroom::col_double(),
+    T12 = vroom::col_logical(),
+    gics_sector = vroom::col_character(),
+    year_accumulated_return = vroom::col_double()
+  )
+)
+
+#' Ticker Hot Spot
+ticker_hotspot <- ticker_return_snapshot %>%
+  tidytable::select.(
+    ticker,
+    current_month = tidyselect::contains(format(today(), "T%m")),
+    gics_sector, year_accumulated_return
+  ) %>%
+  tidytable::filter.(
+    .by = ticker, 
+    all(!is.na(current_month), !is.na(year_accumulated_return))
+    ) %>%
+  tidytable::filter.(
+    .by = gics_sector,
+    current_month %in% c(
+      max(current_month, na.rm = TRUE),
+      min(current_month, na.rm = TRUE)
+    ) |
+      year_accumulated_return %in% c(
+        max(year_accumulated_return, na.rm = TRUE),
+        min(year_accumulated_return, na.rm = TRUE)
+      )
+  )
+
+#' Chain by Industry
+ticker_hotspot_by_industry <- ticker_hotspot %>%
+  tidytable::pivot_longer.(
+    cols = c(current_month, year_accumulated_return),
+    names_to = "period", values_to = "return_value"
+  ) %>%
+  tidytable::mutate.(
+    .by = c(gics_sector, period),
+    class = tidytable::case.(
+      return_value == max(return_value, na.rm = TRUE), "max",
+      return_value == min(return_value, na.rm = TRUE), "min"
+    )
+  ) %>%
+  tidytable::filter.(
+    .by = c(gics_sector, period, ticker),
+    any(!is.na(class))
+  ) %>%
+  tidytable::mutate.(return_value = as.character(return_value)) %>%
+  tidytable::pivot_longer.(
+    cols = c(ticker, return_value),
+    names_to = "type",
+    values_to = "ticker_return"
+  ) %>%
+  tidytable::pivot_wider.(
+    names_from = c(period, class, type),
+    values_from = ticker_return,
+    id_cols = gics_sector
+  ) %>%
+  tidytable::mutate_across.(.cols = ends_with("return_value"), ~ as.numeric(.)) %>%
+  tidytable::relocate.(
+    gics_sector, 
+    current_month_max_ticker, current_month_max_return_value,
+    current_month_min_ticker, current_month_min_return_value,
+    year_accumulated_return_max_ticker, year_accumulated_return_max_return_value,
+    year_accumulated_return_min_ticker, year_accumulated_return_min_return_value
+  ) %>%
+  tidytable::mutate.(gics_sector = stringr::str_replace(gics_sector, pattern = "_", replacement = " "))
+
+#' Capture numeric
+ticker_numeric <- ticker_return_snapshot %>% 
+  tidytable::select.(-c(ticker, gics_sector, ticker_name_english, marketcap))
+
+#' Min-Max
+max_value <- max(ticker_numeric, na.rm = TRUE)
+min_value <- min(ticker_numeric, na.rm = TRUE)
+
+#' Functional
+#' Rescale Value
+rescale <- function(max, min, value) {
+
+  #' Rescale
+  value <- (value - min) / (max - min)
+
+  #' Return
+  return(value)
+}
+
+#' Create Color Palette
+make_color_pal <- function(colors, bias = 1) {
+  
+  #' Get
+  get_color <- grDevices::colorRamp(colors, bias = bias)
+  
+  #' Return
+  function(x) grDevices::rgb(get_color(x), maxColorValue = 255)
+}
+
+#' Create Color Palette
+up_color <- make_color_pal(c("#CCFFE5", "#00994C"), bias = 2)
+down_color <- make_color_pal(c("#FF0000", "#FFE6E6"), bias = 2)
+
+#' Column Define for return
+return_colDef <- function(maxWidth = 60, class = NULL, ...) {
+  reactable::colDef(
+    ...,
+    align = "center",
+    na = "-----",
+    cell = function(value) {
+      if (!is.na(value)) {
+        formatC(paste0(round(value, 1), "%"), width = 4)
+      } else {
+        value
+      }
+    },
+    maxWidth = maxWidth,
+    class = paste0("cell_number", class),
+    style = function(value) {
+      if (!is.na(value)) {
+        if (all(value > 0, value < 300)) {
+          list(
+            color = "#111", "background" = up_color(rescale(max = max_value, min = 0, value)),
+            fontSize = "12px"
+          )
+        } else if (all(value > -300, value < 0)) {
+          list(
+            color = "#111", "background" = down_color(rescale(max = 0, min = min_value, value)),
+            fontSize = "12px"
+          )
+        } else if (value == 0) {
+          list(
+            color = "#111", "background" = "#FFFFFF",
+            fontSize = "12px"
+          )
+        }
+      } else {
+        list(
+          color = "#111", "background" = "#F0F0F0",
+          fontSize = "12px"
+        )
+      }
+    }
+  )
+}
+```
+
+```{r UI-layout, echo = FALSE}
+tags$div(
+  class = "standings",
+  tags$div(
+    tags$h3("Overall"),
+    tags$p("View stocks with the highes and the lowest return in each industry at Current month and Overall year")
+  ),
+  reactable::reactable(
+    data = ticker_hotspot_by_industry,
+    class = "standings-table",
+    showSortIcon = FALSE,
+    borderless = TRUE,
+    pagination = TRUE,
+    defaultPageSize = 5,
+    pageSizeOptions = 5,
+    highlight = TRUE,
+    striped = TRUE,
+    defaultColDef = reactable::colDef(
+      sortNALast = TRUE,
+      headerClass = "box-score-header"
+    ),
+    columns = list(
+      gics_sector = reactable::colDef(name = "Sector", maxWidth = 120, align = "center"),
+      current_month_max_ticker = colDef(
+        name = "Ticker",
+        align = "center", style = list(fontWeight = 600), html = TRUE
+      ),
+      current_month_max_return_value = return_colDef(maxWidth = NULL, name = "Return", html = TRUE),
+      current_month_min_ticker = reactable::colDef(
+        name = "Ticker",
+        align = "center", style = list(fontWeight = 600), html = TRUE
+      ),
+      current_month_min_return_value = return_colDef(maxWidth = NULL, name = "Return", html = TRUE),
+      year_accumulated_return_max_ticker = reactable::colDef(
+        name = "Ticker",
+        align = "center", style = list(fontWeight = 600), html = TRUE
+      ),
+      year_accumulated_return_max_return_value = return_colDef(maxWidth = NULL, name = "Return", html = TRUE),
+      year_accumulated_return_min_ticker = colDef(
+        name = "Ticker",
+        align = "center", style = list(fontWeight = 600), html = TRUE
+      ),
+      year_accumulated_return_min_return_value = return_colDef(maxWidth = NULL, name = "Return", html = TRUE)
+    ),
+    columnGroups = list(
+      reactable::colGroup(
+        name = glue::glue("Curent month ({format(today(), 'T%m')})"),
+        columns = c("current_month_max_ticker", "current_month_max_return_value", "current_month_min_ticker", "current_month_min_return_value"),
+        headerStyle = list(
+          "background" = "#006BB8",
+          color = "#FAFAFA"
+        ),
+        html = TRUE
+      ),
+      reactable::colGroup(
+        name = "Overall Year",
+        columns = c(
+          "year_accumulated_return_max_ticker", "year_accumulated_return_max_return_value",
+          "year_accumulated_return_min_ticker", "year_accumulated_return_min_return_value"
+        ),
+        headerStyle = list(
+          "background" = "#646464",
+          color = "#FAFAFA"
+        ),
+        html = TRUE
+      )
+    ),
+    # Emphasize borders between groups when sorting by group
+    rowClass = JS("
+          function(rowInfo, state) {
+            const firstSorted = state.sorted[0]
+            if (firstSorted && firstSorted.id === 'group') {
+              const nextRow = state.pageRows[rowInfo.viewIndex + 1]
+              if (nextRow && rowInfo.row.group !== nextRow.group) {
+                return 'group-last'
+              }
+            }
+          }")
+  ),
+  tags$p("Source: SSI. Return calculated in VND. Updated 09/11/2020")
+)
+
+#' UI Generate
+tags$div(
+  #' Title
+  tags$h3("Snapshot Monthly Market Heatmap by Industry"),
+  shiny::tagList(
+    1:length(.__config_snapshot_return__$ticker) %>% purrr::map(
+      ~ div(
+        class = "standings",
+        div(
+          class = "title",
+          h2(stringr::str_replace(glue::glue("{names(.__config_snapshot_return__$ticker)[.]}"), pattern = "_", replacement = " "))
+        ),
+        reactable::reactable(
+          showSortIcon = FALSE,
+          borderless = TRUE,
+          class = "standings-table",
+          pagination = FALSE,
+          defaultSorted = list(year_accumulated_return = "desc"),
+          defaultPageSize = 5,
+          pageSizeOptions = 5,
+          highlight = TRUE,
+          striped = TRUE,
+          elementId = glue::glue("{names(.__config_snapshot_return__$ticker)[.]}"),
+          defaultColDef = colDef(
+            sortNALast = TRUE,
+            headerClass = "box-score-header"
+          ),
+          data = tidytable::select.(
+            tidytable::filter.(ticker_return_snapshot, gics_sector == names(.__config_snapshot_return__$ticker)[.]),
+            -gics_sector, -ticker_name_english
+          ),
+          columns = list(
+            ticker = colDef(name = "Ticker", maxWidth = 90, align = "center"),
+            marketcap = colDef(
+              name = "Maca (VND bils)",
+              align = "center",
+              cell = function(value) {
+                formatC(value, digits = 0, big.mark = ",", decimal.mark = ".", format = "f")
+              }
+            ),
+            T01 = return_colDef(name = "Jan"),
+            T02 = return_colDef(name = "Feb"),
+            T03 = return_colDef(name = "Mar"),
+            T04 = return_colDef(name = "Apr"),
+            T05 = return_colDef(name = "May"),
+            T06 = return_colDef(name = "Jun"),
+            T07 = return_colDef(name = "Jul"),
+            T08 = return_colDef(name = "Aug"),
+            T09 = return_colDef(name = "Sep"),
+            T10 = return_colDef(name = "Oct"),
+            T11 = return_colDef(name = "Nov"),
+            T12 = return_colDef(name = "Dec"),
+            year_accumulated_return = return_colDef(name = "YAR")
+          ),
+          # Emphasize borders between groups when sorting by group
+          rowClass = JS("
+          function(rowInfo, state) {
+            const firstSorted = state.sorted[0]
+            if (firstSorted && firstSorted.id === 'group') {
+              const nextRow = state.pageRows[rowInfo.viewIndex + 1]
+              if (nextRow && rowInfo.row.group !== nextRow.group) {
+                return 'group-last'
+              }
+            }
+          }"),
+        ),
+          tags$p("Source: SSI. Return calculated in VND. Updated 09/11/2020. YAR: Year Accumulated Return")
+      )
+    )
+  )
+)
+
+```
+
+
+```{r add_google_api_font}
+tags$link(href = "https://fonts.googleapis.com/css2?family=Roboto:wght@400;700;900&display=swap", rel = "stylesheet")
+```
+
+```{css}
+.standings {
+  font-family: 'Roboto', Helvetica, Arial, sans-serif;
+  font-size: 14px;
+}
+.title {
+  margin: 18px 0;
+  font-size: 16px;
+}
+.title h2 {
+  font-size: 20px;
+  font-weight: 600;
+}
+.standings-table {
+  margin-bottom: 20px;
+}
+/* Align header text to the bottom */
+.header,
+.group-header {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+}
+.header {
+  border-bottom-color: #555;
+  font-size: 13px;
+  font-weight: 400;
+  text-transform: uppercase;
+}
+/* Highlight headers when sorting */
+.header:hover,
+.header[aria-sort="ascending"],
+.header[aria-sort="descending"] {
+  background-color: #eee;
+}
+.border-left {
+  border-left: 2px solid #555;
+}
+/* Use box-shadow to create row borders that appear behind vertical borders */
+.cell {
+  box-shadow: inset 0 -1px 0 rgba(0, 0, 0, 0.15);
+}
+.group-last .cell {
+  box-shadow: inset 0 -2px 0 #555;
+}
+.team {
+  display: flex;
+  align-items: baseline;
+}
+.record {
+  margin-left: 5px;
+  color: #999;
+  font-size: 13px;
+}
+.team-name {
+  font-size: 18px;
+  font-weight: 700;
+}
+.flag {
+  margin-right: 8px;
+  height: 21px;
+  border: 1px solid #f0f0f0;
+}
+.group {
+  font-size: 19px;
+}
+.number {
+  font-family: "Fira Mono", Consolas, Monaco, monospace;
+  font-size: 16px;
+  line-height: 30px;
+  white-space: pre;
+}
+.spi-rating {
+  width: 30px;
+  height: 30px;
+  border: 1px solid rgba(0, 0, 0, 0.03);
+  border-radius: 50%;
+  color: #000;
+  font-size: 13px;
+  letter-spacing: -2px;
+}
+.box-score-title {
+  margin-top: 24px;
+  padding: 8px;
+  background-color: hsl(205, 100%, 36%);
+  color: hsl(0, 0%, 98%);
+  font-size: 18px;
+  font-weight: 400;
+}
+.box-score-header {
+  padding: 8px !important;
+  border-bottom-width: 1px;
+  background-color: hsl(205, 93%, 16%);
+  color: hsl(0, 0%, 98%);
+  font-weight: 400;
+  font-size: 14px;
+  text-transform: uppercase;
+  transition: box-shadow 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+}
+
+.box-score-header:hover,
+.box-score-header[aria-sort="ascending"],
+.box-score-header[aria-sort="descending"] {
+  background-color: hsl(205, 100%, 36%);
+}
+
+.box-score-header[aria-sort="ascending"] {
+  box-shadow: inset 0 10px 0 -6px #efaa10 !important;
+}
+
+.box-score-header[aria-sort="descending"] {
+  box-shadow: inset 0 -10px 0 -6px #efaa10 !important;
+}
+```
+
+```{css echo=FALSE}
+/* rmarkdown html documents */
+.main-container {
+  max-width: 1054px !important;
+}
+h1.title {
+  display: none;
+}
+/* pkgdown articles */
+.contents {
+  width: 1054px;
+}
+.page-header {
+  display: none;
+}
+```
